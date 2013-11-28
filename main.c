@@ -18,12 +18,374 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/time.h> //FD_SET, FD_ISSET, FD_ZERO macros
- 
+#include <signal.h> 
 #define TRUE   1
 #define FALSE  0
 #define IMG_PORT 8888
 #define CMD_PORT 9000
 #define MAX_CON_NUM 10
+#define CMD_BUF_SIZE 128
+#define PARA_BUF_SIZE 32
+
+#define STX '['
+#define ETX ']'
+
+#define ERR_FORMAT -1
+#define PIXEL_NUM 1024
+#define PATTERN_BUF_SIZE  (2*PIXEL_NUM)
+#define PATTERN_BASE  500
+#define PATTERN_STEP  5
+
+int g_integration_time = 5000;
+int g_data_pattern_enabled = FALSE;
+int g_sensitivity_level = 6;
+int g_frame_enabled = FALSE;
+
+char g_cmd_buf[CMD_BUF_SIZE-1];  //data buffer of 1K
+char g_cmd_response[CMD_BUF_SIZE-1];
+char g_param_1 [PARA_BUF_SIZE-1];
+char g_data_pattern_buf [PATTERN_BUF_SIZE-1];
+
+void cmd_handler(char* cmd, char* cmd_response);
+void init_pattern_buf (void)
+{
+    int i;
+    for (i=0; i < PIXEL_NUM; i++)
+    {
+        unsigned int data = PATTERN_BASE + PATTERN_STEP*i;
+        g_data_pattern_buf[i*2] = (data && 0xFF);
+        g_data_pattern_buf[i*2+1] = (data && 0xFF00) >> 8;
+
+    }
+}
+
+struct timeval t_last_time;
+int process_img_data(int sd)
+{
+    //puts("process img data");
+    char* buf= NULL;
+    struct timeval t_current;
+    gettimeofday (&t_current, NULL);
+    if ((t_current.tv_usec - t_last_time.tv_usec) < g_integration_time)
+        return;
+
+    if (g_frame_enabled)
+    {
+        if (g_data_pattern_enabled)
+        {
+            buf = g_data_pattern_buf;
+        }
+        else {
+            buf = g_data_pattern_buf;
+        }
+
+        if (send(sd , buf, PIXEL_NUM*2, 0) < 0) 
+        {
+            close(sd);
+            return -1;
+        };
+    }
+    t_last_time = t_current;
+    return 0;
+}
+
+int process_cmd_data(int sd)
+{
+    int addrlen = 0;
+    struct sockaddr_in address;
+    int valread = 0;
+    //Check if it was for closing , and also read the incoming message
+    if ((valread = read( sd , g_cmd_buf, CMD_BUF_SIZE-1)) == 0)
+    {
+        //Somebody disconnected , get his details and print
+        getpeername(sd , (struct sockaddr*)&address , (socklen_t*)&addrlen);
+        printf("Host disconnected , ip %s , port %d \n" , inet_ntoa(address.sin_addr) , ntohs(address.sin_port));
+        //Restart tcp server
+        close(sd);
+        return -1;
+    }
+    //Process command
+    else
+    {
+        //set the string terminating NULL byte on the end of the data read
+        g_cmd_buf[valread] = '\0';
+        cmd_handler(g_cmd_buf,g_cmd_response);
+        if(send(sd , g_cmd_response , strlen(g_cmd_response) , 0 ) < 0){
+            close(sd);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+
+    /* SF, 1/0  StartFrame StopFrame
+       IN, 1/0  Initialize
+       RI       Retrive Info
+       ST, W/R, time in us  
+       ED, W/R, 0/1
+       SS, W/R, 1-7
+       TP, W/R, time ms
+       */
+enum Command {
+    cmd_UNKNOWN,
+    cmd_ED,
+    cmd_IN,
+    cmd_RI,
+    cmd_SF,
+    cmd_SS,
+    cmd_ST,
+    cmd_TP
+};
+
+enum Operation {
+    op_UNKNOWN,
+    op_R,
+    op_W,
+    op_S,
+    op_L,
+    op_Enable,
+    op_Disable
+};
+
+int check_start_end_flag (char* cmd)
+{
+    int len = strlen(cmd);
+    if (cmd[0] == STX)
+    {
+        int i =len;
+        while (i)
+        {
+            if (cmd[i] == ETX)
+            {
+                cmd[i+1] = 0;
+                break;
+            }
+            i--;
+        }
+        if (i > 0)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+void response_unknown (char* buf)
+{
+    sprintf (buf, "[4]");
+}
+
+void response_ok (char* buf)
+{
+    sprintf (buf, "[0]");
+}
+
+void response_ok_param1 (char* buf, int param1)
+{
+    sprintf (buf, "[0, %d]", param1);
+}
+
+void response_detector_info (char* buf)
+{
+    sprintf (buf, "[0]");
+}
+
+enum Command get_cmd_id (char* cmd)
+{
+    /*
+    cmd_ED,
+    cmd_IN,
+    cmd_RI,
+    cmd_SF,
+    cmd_SS,
+    cmd_ST*/
+
+    if ((cmd[1] == 'E')&&(cmd[2] == 'D'))
+        return cmd_ED;
+
+    if ((cmd[1] == 'I')&&(cmd[2] == 'N'))
+        return cmd_IN;
+
+    if ((cmd[1] == 'R')&&(cmd[2] == 'I'))
+        return cmd_RI;
+
+    if ((cmd[1] == 'S')&&(cmd[2] == 'F'))
+        return cmd_SF;
+
+    if ((cmd[1] == 'S')&&(cmd[2] == 'S'))
+        return cmd_SS;
+
+    if ((cmd[1] == 'S')&&(cmd[2] == 'T'))
+        return cmd_ST;
+
+    if ((cmd[1] == 'T')&&(cmd[2] == 'P'))
+        return cmd_ST;
+    return cmd_UNKNOWN;
+}
+
+enum Operation get_op_id (char* cmd)
+{
+    if (cmd[4] == 'W')
+        return op_W;
+    if (cmd[4] == 'R')
+        return op_R;
+    if (cmd[4] == '1')
+        return op_Enable;
+    if (cmd[4] == '0')
+        return op_Disable;
+    return op_UNKNOWN;
+}
+
+int isdigital (char c)
+{
+    return ((c > '0') && (c < '9'));
+}
+
+int get_param_1 (char* cmd)
+{
+    //Find the second ','
+    if (cmd[5] != ',')
+        return 0;
+    int start, end, n; 
+    start = 6;
+    end = start;
+    while (isdigital(cmd[end]))
+    {
+        n = n*10 + (cmd[end]-'0');
+        end++;
+    }
+}
+
+void start_frame ()
+{
+    g_frame_enabled = TRUE;
+    gettimeofday (&t_last_time, NULL);
+}
+
+void stop_frame ()
+{
+    g_frame_enabled = FALSE;
+}
+
+void enable_data_pattern ()
+{
+    g_data_pattern_enabled = TRUE;
+}
+
+void disable_data_pattern ()
+{
+    g_data_pattern_enabled = FALSE;
+}
+
+void set_sensitivity_level (int level)
+{
+    if (level < 0)
+        level = 0;
+    if (level > 6)
+        level = 6;
+    g_sensitivity_level = level;
+}
+
+void set_integration_time (int time_in_us)
+{
+    g_integration_time = time_in_us;
+}
+void cmd_handler(char* cmd, char* cmd_response)
+{
+    int len = strlen(cmd);
+    
+    if (!check_start_end_flag(cmd))
+    {
+        response_unknown(cmd_response);
+    }
+
+    enum Command cmd_id;
+    enum Operation op_id;
+
+    cmd_id = get_cmd_id (cmd);
+    op_id = get_op_id (cmd);
+    switch (cmd_id) 
+    {
+        case cmd_UNKNOWN:
+            response_unknown(cmd_response);
+            break;
+
+        case cmd_IN:
+            response_ok(cmd_response);
+            break;
+
+        case cmd_ED:
+            if (op_id == op_W)
+            {
+                int param1 = get_param_1 (cmd);
+                if (param1 > 0)
+                    enable_data_pattern ();
+                else
+                    disable_data_pattern ();
+                response_ok(cmd_response);
+            } 
+            else if (op_id == op_R)
+            {
+                response_ok_param1(cmd_response, g_data_pattern_enabled);
+            }
+            else if (op_id == op_UNKNOWN){
+                response_unknown(cmd_response);
+            }
+            break;
+
+        case cmd_RI:
+            response_detector_info (cmd_response);
+            break;
+
+        case cmd_SF:
+            if (op_id == op_Enable)
+                start_frame ();
+            else if (op_id == op_Disable)
+                stop_frame ();
+
+            response_ok(cmd_response);
+            break;
+
+        case cmd_ST:
+            if (op_id == op_W)
+            {
+                int time_in_us = get_param_1 (cmd);
+                set_integration_time (time_in_us);
+                response_ok(cmd_response);
+            } 
+            else if (op_id == op_R)
+            {
+                response_ok_param1(cmd_response, g_integration_time);
+            }
+            else if (op_id == op_UNKNOWN){
+                response_unknown(cmd_response);
+            }
+            break;
+
+        case cmd_SS:
+            if (op_id == op_W)
+            {
+                int sensitivity = get_param_1 (cmd);
+                set_sensitivity_level (sensitivity);
+                response_ok(cmd_response);
+            } 
+            else if (op_id == op_R)
+            {
+                response_ok_param1(cmd_response, g_sensitivity_level);
+            }
+            else if (op_id == op_UNKNOWN){
+                response_unknown(cmd_response);
+            }
+            break;
+        case cmd_TP:
+
+
+    }
+}
+
+void sig_pipe(int signo)
+{
+    printf("Get SIGPIPE signal\n");
+}
 
 int open_socket(port)
 {
@@ -54,7 +416,7 @@ int open_socket(port)
     if (bind(master_socket, (struct sockaddr *)&address, sizeof(address))<0) 
     {
         perror("bind failed");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 	printf("Listener on port %d \n", port);
 	
@@ -62,7 +424,7 @@ int open_socket(port)
     if (listen(master_socket, 3) < 0)
     {
         perror("listen");
-        exit(EXIT_FAILURE);
+        return -1;
     }
      
     //accept the incoming connection
@@ -101,41 +463,6 @@ int accept_new_connection(int master_socket, int client_socket[], int max_client
     return 0; 
 }
 
-int process_img_data(int sd)
-{
-    puts("process img data");
-    char* buffer="image test";
-    send(sd , buffer , strlen(buffer) , 0 );
-    return 0;
-}
-
-int process_cmd_data(int sd)
-{
-    char buffer[1025];  //data buffer of 1K
-    int addrlen = 0;
-    struct sockaddr_in address;
-    int valread = 0;
-    //Check if it was for closing , and also read the incoming message
-    if ((valread = read( sd , buffer, 1024)) == 0)
-    {
-        //Somebody disconnected , get his details and print
-        getpeername(sd , (struct sockaddr*)&address , (socklen_t*)&addrlen);
-        printf("Host disconnected , ip %s , port %d \n" , inet_ntoa(address.sin_addr) , ntohs(address.sin_port));
-
-        //Close the socket and mark as 0 in list for reuse
-        close(sd);
-        return -1;
-    }
-
-    //Echo back the message that came in
-    else
-    {
-        //set the string terminating NULL byte on the end of the data read
-        buffer[valread] = '\0';
-        send(sd , buffer , strlen(buffer) , 0 );
-    }
-    return 0;
-}
 
 int main(int argc , char *argv[])
 {
@@ -146,9 +473,18 @@ int main(int argc , char *argv[])
     int max_clients = MAX_CON_NUM;
     int activity, i , sd;
 	int max_sd;
-     
-    //a message
+
     char *message = "ECHO Daemon v1.0 \r\n";
+    struct sigaction sa;
+    sa.sa_handler = SIG_IGN;
+    if (signal(SIGPIPE,sig_pipe) == SIG_ERR) {
+        printf("register error handler error,exit");
+        return -1;
+    }
+    init_pattern_buf (); 
+INIT:    
+//init_sys();     
+    //a message
  
     //initialise all client_socket[] to 0 so not checked
     for (i = 0; i < max_clients; i++) 
@@ -216,7 +552,6 @@ int main(int argc , char *argv[])
         timeout.tv_usec =20;
 
         activity = select(max_sd + 1 , &read_fds , &write_fds, NULL, &timeout);
-        //activity = select(max_sd + 1 , &read_fds , &write_fds, NULL, NULL);
    
         if ((activity < 0) && (errno!=EINTR)) 
         {
@@ -225,10 +560,14 @@ int main(int argc , char *argv[])
         }
          
         //If something happened on the read master socket, then its an incoming cmd connection
-        if (FD_ISSET(cmd_master_socket, &read_fds)) 
+        if (FD_ISSET(cmd_master_socket, &read_fds))
+        {
+            puts("img socekt get request");
             accept_new_connection(cmd_master_socket, cmd_client_socket, MAX_CON_NUM);
+        }
         
-        if (FD_ISSET(img_master_socket, &read_fds)){
+        if (FD_ISSET(img_master_socket, &read_fds))
+        {
             puts("img socekt get request");
             accept_new_connection(img_master_socket, img_client_socket, MAX_CON_NUM);
         }
@@ -239,17 +578,24 @@ int main(int argc , char *argv[])
             if (FD_ISSET(sd, &read_fds)) 
             {
                 if (process_cmd_data(sd)<0)
-                    cmd_client_socket[i] = 0;
+                {
+                //   cmd_client_socket[i] = 0;
+                    goto CLEAN;
+                }
             }
 
             sd = img_client_socket[i];
             if(FD_ISSET(sd, &write_fds))
             {
                 if (process_img_data(sd)<0)
-                    img_client_socket[i] = 0;
+                {
+                 //   img_client_socket[i] = 0;
+                    goto CLEAN;
+                }
             }
         }
     }
+    printf("exit detector\n");
     return 0;
 
 CLEAN:
@@ -262,4 +608,5 @@ CLEAN:
     }
     close(cmd_master_socket);
     close(img_master_socket);
+    goto INIT;
 } 
