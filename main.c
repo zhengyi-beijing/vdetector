@@ -21,8 +21,10 @@
 #include <signal.h> 
 #define TRUE   1
 #define FALSE  0
-#define IMG_PORT 8888
-#define CMD_PORT 9000
+//#define IMG_PORT 4001 
+#define IMG_PORT 4001 
+//#define CMD_PORT 3000
+#define CMD_PORT 3000
 #define MAX_CON_NUM 10
 #define CMD_BUF_SIZE 128
 #define PARA_BUF_SIZE 32
@@ -33,40 +35,76 @@
 #define ERR_FORMAT -1
 #define PIXEL_NUM 1024
 #define PATTERN_BUF_SIZE  (2*PIXEL_NUM)
-#define PATTERN_BASE  500
-#define PATTERN_STEP  5
+#define PATTERN_BASE  1500
+#define PATTERN_STEP  10
 
 int g_integration_time = 5000;
 int g_data_pattern_enabled = FALSE;
 int g_sensitivity_level = 6;
 int g_frame_enabled = FALSE;
 
-char g_cmd_buf[CMD_BUF_SIZE-1];  //data buffer of 1K
-char g_cmd_response[CMD_BUF_SIZE-1];
-char g_param_1 [PARA_BUF_SIZE-1];
-char g_data_pattern_buf [PATTERN_BUF_SIZE-1];
+unsigned char g_cmd_buf[CMD_BUF_SIZE-1];  //data buffer of 1K
+unsigned char g_cmd_response[CMD_BUF_SIZE-1];
+unsigned char g_param_1 [PARA_BUF_SIZE-1];
+unsigned char g_data_pattern_buf [PATTERN_BUF_SIZE-1];
+unsigned char g_data_header[6];
+
+unsigned char packet_count = 0;
 
 void cmd_handler(char* cmd, char* cmd_response);
+
+void set_packet_count()
+{
+    packet_count++;
+    g_data_header[3] = packet_count;
+}
+
+void init_data_header()
+{
+    g_data_header[0] = 0;
+    unsigned int len = PIXEL_NUM*2+6;
+    g_data_header[1] = (len & 0xFF00)>>8;
+    g_data_header[2] = (len & 0xFF);
+    g_data_header[3] = packet_count;
+    g_data_header[4] = 0;
+    g_data_header[5] = 0;
+}
+
 void init_pattern_buf (void)
 {
     int i;
     for (i=0; i < PIXEL_NUM; i++)
     {
         unsigned int data = PATTERN_BASE + PATTERN_STEP*i;
-        g_data_pattern_buf[i*2] = (data && 0xFF);
-        g_data_pattern_buf[i*2+1] = (data && 0xFF00) >> 8;
+        g_data_pattern_buf[i*2] = (data & 0xFF);
+        g_data_pattern_buf[i*2+1] = (data & 0xFF00) >> 8;
 
     }
 }
 
 struct timeval t_last_time;
+
+double time_diff(struct timeval x , struct timeval y)
+{
+    double x_ms , y_ms , diff;
+          
+    x_ms = (double)x.tv_sec*1000000 + (double)x.tv_usec;
+    y_ms = (double)y.tv_sec*1000000 + (double)y.tv_usec;
+                    
+    diff = (double)y_ms - (double)x_ms;
+                        
+    return diff;
+}
+
 int process_img_data(int sd)
 {
     //puts("process img data");
-    char* buf= NULL;
+    unsigned char* buf= NULL;
     struct timeval t_current;
     gettimeofday (&t_current, NULL);
-    if ((t_current.tv_usec - t_last_time.tv_usec) < g_integration_time)
+    double diff = time_diff(t_last_time, t_current);
+
+    if (diff  < g_integration_time)
         return;
 
     if (g_frame_enabled)
@@ -78,12 +116,23 @@ int process_img_data(int sd)
         else {
             buf = g_data_pattern_buf;
         }
-
-        if (send(sd , buf, PIXEL_NUM*2, 0) < 0) 
+        //char* address;
+        //int len = get_data_buf(&address);
+        //if (len == 0)
+        //    return 0;
+        if (send(sd , g_data_header, 6, 0) < 0) 
         {
+            printf("Send header error\n");
             close(sd);
             return -1;
         };
+        if (send(sd , buf, PIXEL_NUM*2, 0) < 0) 
+        {
+            printf("Send data error\n");
+            close(sd);
+            return -1;
+        };
+        set_packet_count();
     }
     t_last_time = t_current;
     return 0;
@@ -235,9 +284,19 @@ enum Operation get_op_id (char* cmd)
     return op_UNKNOWN;
 }
 
-int isdigital (char c)
+int digital (char c)
 {
-    return ((c > '0') && (c < '9'));
+    if ((c >= '0') && (c <= '9')){
+        return (c-'0');
+    }
+    else if((c >= 'A')&&(c <= 'F')) {
+        return (10 + c - 'A');
+    }
+    else if((c >= 'a') && (c <= 'f')) {
+        return (10 + c - 'a');
+    }
+
+    return -1;
 }
 
 int get_param_1 (char* cmd)
@@ -245,20 +304,31 @@ int get_param_1 (char* cmd)
     //Find the second ','
     if (cmd[5] != ',')
         return 0;
-    int start, end, n; 
+    int start, end, n, result, max; 
     start = 6;
     end = start;
-    while (isdigital(cmd[end]))
+    max = start + 6;
+    n = 0;
+    result = 0;
+    while (1)
     {
-        n = n*10 + (cmd[end]-'0');
+        n = digital(cmd[end]);
+        if (n < 0)
+            break;
+        result = result*16 + n;
         end++;
+        if (end > max)
+            break;
     }
+    return result;
 }
 
 void start_frame ()
 {
+    packet_count = 0;
     g_frame_enabled = TRUE;
     gettimeofday (&t_last_time, NULL);
+    printf("last time is %f s    %f us", (double)t_last_time.tv_sec, (double)t_last_time.tv_usec);
 }
 
 void stop_frame ()
@@ -287,7 +357,12 @@ void set_sensitivity_level (int level)
 
 void set_integration_time (int time_in_us)
 {
+    if(time_in_us < 2000){
+        printf("integration time is %d us, too short", time_in_us);
+        return;
+    }
     g_integration_time = time_in_us;
+
 }
 void cmd_handler(char* cmd, char* cmd_response)
 {
@@ -337,10 +412,14 @@ void cmd_handler(char* cmd, char* cmd_response)
             break;
 
         case cmd_SF:
-            if (op_id == op_Enable)
+            if (op_id == op_Enable) {
+                printf("Start Frame\n");
                 start_frame ();
-            else if (op_id == op_Disable)
+            }
+            else if (op_id == op_Disable){
+                printf("Stop Frame\n");
                 stop_frame ();
+            }
 
             response_ok(cmd_response);
             break;
@@ -377,7 +456,7 @@ void cmd_handler(char* cmd, char* cmd_response)
             }
             break;
         case cmd_TP:
-
+            break;
 
     }
 }
@@ -481,8 +560,10 @@ int main(int argc , char *argv[])
         printf("register error handler error,exit");
         return -1;
     }
-    init_pattern_buf (); 
 INIT:    
+    packet_count = 0;
+    init_data_header();
+    init_pattern_buf (); 
 //init_sys();     
     //a message
  
