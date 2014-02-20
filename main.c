@@ -33,7 +33,7 @@
 #define ETX ']'
 
 #define ERR_FORMAT -1
-#define PIXEL_NUM 1024
+#define PIXEL_NUM 1536
 #define PATTERN_BUF_SIZE  (2*PIXEL_NUM)
 #define PATTERN_BASE  1500
 #define PATTERN_STEP  10
@@ -158,6 +158,7 @@ int process_cmd_data(int sd)
     {
         //set the string terminating NULL byte on the end of the data read
         g_cmd_buf[valread] = '\0';
+        printf("get cmd %s\n", g_cmd_buf);
         cmd_handler(g_cmd_buf,g_cmd_response);
         if(send(sd , g_cmd_response , strlen(g_cmd_response) , 0 ) < 0){
             close(sd);
@@ -428,6 +429,7 @@ void cmd_handler(char* cmd, char* cmd_response)
             if (op_id == op_W)
             {
                 int time_in_us = get_param_1 (cmd);
+                printf("integtaion time is %d us\n", time_in_us);
                 set_integration_time (time_in_us);
                 response_ok(cmd_response);
             } 
