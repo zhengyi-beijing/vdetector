@@ -105,7 +105,7 @@ int process_img_data(int sd)
     double diff = time_diff(t_last_time, t_current);
 
     if (diff  < g_integration_time)
-        return;
+        return 0;
 
     if (g_frame_enabled)
     {
