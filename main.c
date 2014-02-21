@@ -21,9 +21,7 @@
 #include <signal.h> 
 #define TRUE   1
 #define FALSE  0
-//#define IMG_PORT 4001 
 #define IMG_PORT 4001 
-//#define CMD_PORT 3000
 #define CMD_PORT 3000
 #define MAX_CON_NUM 10
 #define CMD_BUF_SIZE 128
@@ -176,6 +174,14 @@ int process_cmd_data(int sd)
        ED, W/R, 0/1
        SS, W/R, 1-7
        TP, W/R, time ms
+
+       */
+    /*
+       For testing purpose
+       XO, image_id  x-ray on image_id
+       XF, x-ray off load offset image
+       OS, image_id  Object Scan with x-ray
+
        */
 enum Command {
     cmd_UNKNOWN,
@@ -186,6 +192,12 @@ enum Command {
     cmd_SS,
     cmd_ST,
     cmd_TP
+#ifndef NIOS
+    , 
+    cmd_XO,
+    cmd_XF,
+    cmd_OS
+#endif
 };
 
 enum Operation {
@@ -269,6 +281,14 @@ enum Command get_cmd_id (char* cmd)
 
     if ((cmd[1] == 'T')&&(cmd[2] == 'P'))
         return cmd_ST;
+#ifndef NIOS
+    if ((cmd[1] == 'X')&&(cmd[2] == 'O'))
+        return cmd_XO;
+    if ((cmd[1] == 'X')&&(cmd[2] == 'F'))
+        return cmd_XF;
+    if ((cmd[1] == 'O')&&(cmd[2] == 'S'))
+        return cmd_OS;
+#endif
     return cmd_UNKNOWN;
 }
 
@@ -367,6 +387,9 @@ void set_integration_time (int time_in_us)
 }
 void cmd_handler(char* cmd, char* cmd_response)
 {
+#ifndef NIOS
+   int image_id = 0;
+#endif
     int len = strlen(cmd);
     
     if (!check_start_end_flag(cmd))
@@ -443,14 +466,12 @@ void cmd_handler(char* cmd, char* cmd_response)
             break;
 
         case cmd_SS:
-            if (op_id == op_W)
-            {
+            if (op_id == op_W){
                 int sensitivity = get_param_1 (cmd);
                 set_sensitivity_level (sensitivity);
                 response_ok(cmd_response);
             } 
-            else if (op_id == op_R)
-            {
+            else if (op_id == op_R){
                 response_ok_param1(cmd_response, g_sensitivity_level);
             }
             else if (op_id == op_UNKNOWN){
@@ -459,8 +480,40 @@ void cmd_handler(char* cmd, char* cmd_response)
             break;
         case cmd_TP:
             break;
-
+#ifndef NIOS
+        case cmd_XO:
+            image_id = get_param_1 (cmd);
+            set_image_source(AirScan, image_id);
+            break;
+        case cmd_XO:
+            set_image_source(Offset, 0);
+            break;
+        case cmd_OS:
+            image_id = get_param_1 (cmd);
+            set_image_source(ObjectScan, image_id);
+            break;
+#endif
     }
+}
+
+typedef enum { Real, Pattern, AirScan, Offset, ObjectScan} ImageDataType  ;
+
+void set_image_source(ImageDataType data_type, int image_id)
+{
+    switch (data_type):
+    {
+        case Real:
+            break;
+        case Pattern:
+            break;
+        case Offset:
+            break;
+        case AirScan:
+            break;
+        case ObjectScan:
+            break;
+    }
+
 }
 
 void sig_pipe(int signo)
@@ -565,36 +618,32 @@ int main(int argc , char *argv[])
 INIT:    
     packet_count = 0;
     init_data_header();
-    init_pattern_buf (); 
+    init_pattern_buf(); 
 //init_sys();     
     //a message
  
     //initialise all client_socket[] to 0 so not checked
-    for (i = 0; i < max_clients; i++) 
-    {
+    for (i = 0; i < max_clients; i++) {
         cmd_client_socket[i] = 0;
         img_client_socket[i] = 0;
     }
     
     cmd_master_socket = open_socket(CMD_PORT);
     puts("open cmd port\n");
-    if(cmd_master_socket < 0)
-    {
+    if(cmd_master_socket < 0){
         goto CLEAN;
     }
 
     img_master_socket = open_socket(IMG_PORT);
     puts("open image port\n");
-    if(cmd_master_socket < 0)
-    {
+    if(cmd_master_socket < 0){
         goto CLEAN;
     }
     
     //set of socket descriptors
     fd_set read_fds;
     fd_set write_fds;
-	while(TRUE) 
-    {
+	while(TRUE){
         //clear the socket set
         FD_ZERO(&read_fds);
         FD_ZERO(&write_fds);
@@ -605,8 +654,7 @@ INIT:
         max_sd = cmd_master_socket > img_master_socket ? cmd_master_socket:img_master_socket;
 		
         //add child sockets to set
-        for ( i = 0 ; i < max_clients ; i++) 
-        {
+        for ( i = 0 ; i < max_clients ; i++) {
             //socket descriptor
 			sd = cmd_client_socket[i];
             
@@ -636,42 +684,34 @@ INIT:
 
         activity = select(max_sd + 1 , &read_fds , &write_fds, NULL, &timeout);
    
-        if ((activity < 0) && (errno!=EINTR)) 
-        {
+        if ((activity < 0) && (errno!=EINTR)){
             printf("select error");
             goto CLEAN; 
         }
          
         //If something happened on the read master socket, then its an incoming cmd connection
-        if (FD_ISSET(cmd_master_socket, &read_fds))
-        {
+        if (FD_ISSET(cmd_master_socket, &read_fds)){
             puts("img socekt get request");
             accept_new_connection(cmd_master_socket, cmd_client_socket, MAX_CON_NUM);
         }
         
-        if (FD_ISSET(img_master_socket, &read_fds))
-        {
+        if (FD_ISSET(img_master_socket, &read_fds)){
             puts("img socekt get request");
             accept_new_connection(img_master_socket, img_client_socket, MAX_CON_NUM);
         }
         //else its some IO operation on some other socket :)
-        for (i = 0; i < MAX_CON_NUM; i++) 
-        {
+        for (i = 0; i < MAX_CON_NUM; i++){
             sd = cmd_client_socket[i];
-            if (FD_ISSET(sd, &read_fds)) 
-            {
-                if (process_cmd_data(sd)<0)
-                {
+            if (FD_ISSET(sd, &read_fds)){
+                if (process_cmd_data(sd)<0){
                 //   cmd_client_socket[i] = 0;
                     goto CLEAN;
                 }
             }
 
             sd = img_client_socket[i];
-            if(FD_ISSET(sd, &write_fds))
-            {
-                if (process_img_data(sd)<0)
-                {
+            if(FD_ISSET(sd, &write_fds)){
+                if (process_img_data(sd)<0){
                  //   img_client_socket[i] = 0;
                     goto CLEAN;
                 }
@@ -682,8 +722,7 @@ INIT:
     return 0;
 
 CLEAN:
-    for (i = 0; i < max_clients; i++) 
-    {
+    for (i = 0; i < max_clients; i++){
         if(cmd_client_socket[i])
            close(cmd_client_socket[i]);
         if(img_client_socket[i])
