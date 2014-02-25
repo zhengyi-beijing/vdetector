@@ -32,7 +32,7 @@
 
 #define ERR_FORMAT -1
 #define PIXEL_NUM 1536
-#define PATTERN_BUF_SIZE  (2*PIXEL_NUM)
+#define PIXEL_BUF_SIZE  (2*PIXEL_NUM)
 #define PATTERN_BASE  1500
 #define PATTERN_STEP  10
 
@@ -41,16 +41,109 @@ int g_data_pattern_enabled = FALSE;
 int g_sensitivity_level = 6;
 int g_frame_enabled = FALSE;
 
+
 unsigned char g_cmd_buf[CMD_BUF_SIZE-1];  //data buffer of 1K
 unsigned char g_cmd_response[CMD_BUF_SIZE-1];
 unsigned char g_param_1 [PARA_BUF_SIZE-1];
-unsigned char g_data_pattern_buf [PATTERN_BUF_SIZE-1];
+unsigned char g_data_pattern_buf [PIXEL_BUF_SIZE-1];
 unsigned char g_data_header[6];
-
+#ifndef NIOS
+unsigned char* g_real_buf[PIXEL_BUF_SIZE];
+#endif
 unsigned char packet_count = 0;
 
 void cmd_handler(char* cmd, char* cmd_response);
 
+#ifndef NIOS
+typedef enum { Real, Pattern, AirScan, Offset, ObjectScan} ImageDataType  ;
+#else
+typedef enum { Real, Pattern} ImageDataType  ;
+#endif
+ImageDataType g_image_data_type = Real; 
+
+#ifndef NIOS
+int g_image_id = 0;
+char* PATH = "./data/"
+
+char* get_file_line (char* fileName, long* len, int line)
+{
+    char* path = strcat(PATH, fileName);
+    FILE* file = fopen(path, "r");
+}
+
+char*  get_offset_buf (long* len)
+{
+    static line = 0;
+    char* fileName = "offset.txt";
+    return get_file_line(fileName, len, line);
+    line++;
+}
+
+char* get_airScan_buf (long* len, int image_id)
+{
+    static line[8];
+    char* file[] = {"50kV.txt", 
+                    "60kV.txt",
+                    "80kV.txt",
+                    "90kV.txt",
+                    "100kV.txt",
+                    "110kV.txt",
+                    "120kV.txt",
+                    "140kV.txt"};
+
+    return get_file_line(file[image_id], len, line[image_id]);
+    line[image_id]++;
+}
+
+char* get_objectSacn_buf (long* len, int image_id)
+{
+    static line[2];
+    static line = 0;
+    char* file[] = {"Image0_140kV.txt", 
+                    "Image0_140kV.txt"};
+    return get_file_line(file[image_id], len, line[image_id]);
+
+}
+
+#endif
+int get_image_data (unsigned char* address)
+{
+    int len = 0;
+    switch (g_image_data_type):
+    {
+        case Real:
+#ifdef NIOS
+            len = get_data_buf ((unsigned long*)address, 0);
+#else
+            address = g_data_real;
+            len = PIXEL_BUF_SIZE;
+#endif
+            break;
+        case Pattern:
+            address = g_data_pattern_buf;
+            len = PIXEL_BUF_SIZE;
+            break;
+#ifndef NIOS
+        case Offset:
+            len = get_offset_buf(address);
+            break;
+        case AirScan:
+            len = get_airScan_buf(address, g_image_id);
+            break;
+        case ObjectScan:
+            len = get_objectScan_buf(address, g_image_id);
+            break;
+#endif
+    }
+
+    return len;
+}
+
+void set_image_source(ImageDataType data_type, int image_id)
+{
+    g_image_data_type = data_type;
+    g_image_id = image_id;
+}
 void set_packet_count()
 {
     packet_count++;
@@ -68,6 +161,28 @@ void init_data_header()
     g_data_header[5] = 0;
 }
 
+#ifndef NIOS
+int get_random (int base, int var)
+{
+    return base + var*1.0*rand()/(RAND_MAX+1);
+}
+
+void init_real_buf (void)
+{
+    int i;
+    srand(NULL);
+    for (i=0; i < PIXEL_NUM; i++)
+    {
+        int base = 900;
+        int var = 200;
+        unsigned int data = get_random(base, var);
+        g_real_buf[i*2] = (data & 0xFF);
+        g_real_buf[i*2+1] = (data & 0xFF00) >> 8;
+
+    }
+
+}
+#endif
 void init_pattern_buf (void)
 {
     int i;
@@ -210,6 +325,7 @@ enum Operation {
     op_Disable
 };
 
+
 int check_start_end_flag (char* cmd)
 {
     int len = strlen(cmd);
@@ -350,21 +466,29 @@ void start_frame ()
     g_frame_enabled = TRUE;
     gettimeofday (&t_last_time, NULL);
     printf("last time is %f s    %f us", (double)t_last_time.tv_sec, (double)t_last_time.tv_usec);
+#ifdef NIOS
+    reset_data_buf();
+#endif
 }
 
 void stop_frame ()
 {
     g_frame_enabled = FALSE;
+#ifdef NIOS
+    stop_daq();
+#endif
 }
 
 void enable_data_pattern ()
 {
-    g_data_pattern_enabled = TRUE;
+    //g_data_pattern_enabled = TRUE;
+    set_image_source (Pattern);
 }
 
 void disable_data_pattern ()
 {
-    g_data_pattern_enabled = FALSE;
+   //g_data_pattern_enabled = FALSE;
+    set_image_source (Real);
 }
 
 void set_sensitivity_level (int level)
@@ -496,25 +620,6 @@ void cmd_handler(char* cmd, char* cmd_response)
     }
 }
 
-typedef enum { Real, Pattern, AirScan, Offset, ObjectScan} ImageDataType  ;
-
-void set_image_source(ImageDataType data_type, int image_id)
-{
-    switch (data_type):
-    {
-        case Real:
-            break;
-        case Pattern:
-            break;
-        case Offset:
-            break;
-        case AirScan:
-            break;
-        case ObjectScan:
-            break;
-    }
-
-}
 
 void sig_pipe(int signo)
 {
@@ -619,7 +724,11 @@ INIT:
     packet_count = 0;
     init_data_header();
     init_pattern_buf(); 
-//init_sys();     
+#ifdef NIOS
+    init_sys(); 
+#else
+    init_real_buf();
+#endif
     //a message
  
     //initialise all client_socket[] to 0 so not checked
