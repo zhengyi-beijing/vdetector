@@ -48,12 +48,14 @@ unsigned char g_param_1 [PARA_BUF_SIZE-1];
 unsigned char g_data_pattern_buf [PIXEL_BUF_SIZE-1];
 unsigned char g_data_header[6];
 #ifndef NIOS
-unsigned char* g_real_buf[PIXEL_BUF_SIZE];
+unsigned char g_real_buf[PIXEL_BUF_SIZE];
+unsigned char g_file_buf[PIXEL_BUF_SIZE];
 #endif
 unsigned char packet_count = 0;
 
 void cmd_handler(char* cmd, char* cmd_response);
 
+double time_diff(struct timeval x , struct timeval y);
 #ifndef NIOS
 typedef enum { Real, Pattern, AirScan, Offset, ObjectScan} ImageDataType  ;
 #else
@@ -61,22 +63,47 @@ typedef enum { Real, Pattern} ImageDataType  ;
 #endif
 ImageDataType g_image_data_type = Real; 
 
+struct timeval t_last_time;
 #ifndef NIOS
 int g_image_id = 0;
-char* PATH = "./data/"
+char* PATH = "./data/";
 
-char* get_file_line (char* fileName, long* len, int line)
+char* get_file_line (char* fileName, long* len, int* lineId)
 {
-    char* path = strcat(PATH, fileName);
+
+    char path[256] = {0};
+    strcat(path, PATH);
+    strcat(path, fileName);
+    printf("path is %s \n", path);
     FILE* file = fopen(path, "r");
+    if (file == NULL) {
+        printf("cannot open file");
+        return NULL;
+    }
+
+    ssize_t read;
+    char* line = NULL;
+    int curLine = 0;
+read:
+    while(( read == getline(&line, len, file)) != -1) {
+        if(*lineId ==  curLine) {
+            *lineId++;
+            printf("%s", line);
+            return line;
+            break;
+        }
+        curLine++;
+    }
+    //get eof, the file have curLine lines
+    *lineId -= curLine++;
+    goto read;
 }
 
 char*  get_offset_buf (long* len)
 {
     static line = 0;
     char* fileName = "offset.txt";
-    return get_file_line(fileName, len, line);
-    line++;
+    return get_file_line(fileName, len, &line);
 }
 
 char* get_airScan_buf (long* len, int image_id)
@@ -91,52 +118,103 @@ char* get_airScan_buf (long* len, int image_id)
                     "120kV.txt",
                     "140kV.txt"};
 
-    return get_file_line(file[image_id], len, line[image_id]);
-    line[image_id]++;
+    return get_file_line(file[image_id], len, &line[image_id]);
 }
 
-char* get_objectSacn_buf (long* len, int image_id)
+char* get_objectScan_buf (long* len, int image_id)
 {
     static line[2];
-    static line = 0;
     char* file[] = {"Image0_140kV.txt", 
                     "Image0_140kV.txt"};
-    return get_file_line(file[image_id], len, line[image_id]);
+    return get_file_line(file[image_id], len, &line[image_id]);
 
 }
 
-#endif
-int get_image_data (unsigned char* address)
+void get_data_from_buf (char* input)
 {
-    int len = 0;
-    switch (g_image_data_type):
+    int i = 0;
+    int j = 0;
+    int k = 0;
+    char number[6];
+
+    while(input[i] != '\0') {
+        if((input[i] != '\t') && (j < 6)) {
+            number[j] = input[i];
+            j++;
+        } else {
+            number[j] = '\0';
+            if (k < PIXEL_NUM) {
+                unsigned int val = atoi(number);
+                g_file_buf[2*k] = val & 0xFF;
+                g_file_buf[2*k+1] = (val & 0xFF00) >> 8;
+                k++;
+            } else {
+                return;
+            }
+        }
+        i++;
+    }
+}
+#endif
+unsigned char* get_image_data (long* len)
+{
+    char* txtbuf = NULL;
+    char* data = NULL;
+    //if run in virtual mode, then check the integration time
+#ifndef NIOS
+    struct timeval t_current;
+    gettimeofday (&t_current, NULL);
+    double diff = time_diff(t_last_time, t_current);
+
+    if (diff  < g_integration_time)
+        return NULL;
+    t_last_time = t_current;
+#endif
+    switch (g_image_data_type)
     {
         case Real:
 #ifdef NIOS
-            len = get_data_buf ((unsigned long*)address, 0);
+            data = get_data_buf (len, 1);
+            if(*len ==0){
+                buf = NULL;
+            } else if (*len = 0xffffffff) {
+                reset_data_buf();
+                buf = get_data_buf (len,0);
+                if(*len == 0)
+                    buf = NULL;
+            }
 #else
-            address = g_data_real;
-            len = PIXEL_BUF_SIZE;
+            data = g_real_buf;
+            *len = PIXEL_BUF_SIZE;
 #endif
             break;
         case Pattern:
-            address = g_data_pattern_buf;
-            len = PIXEL_BUF_SIZE;
+            data = g_data_pattern_buf;
+            *len = PIXEL_BUF_SIZE;
             break;
 #ifndef NIOS
         case Offset:
-            len = get_offset_buf(address);
+            txtbuf = get_offset_buf(len);
+            get_data_from_buf (txtbuf);
+            free(txtbuf);
+            data = g_file_buf; 
             break;
         case AirScan:
-            len = get_airScan_buf(address, g_image_id);
+            txtbuf = get_airScan_buf(len, g_image_id);
+            get_data_from_buf (txtbuf);
+            free(txtbuf);
+            data = g_file_buf; 
             break;
         case ObjectScan:
-            len = get_objectScan_buf(address, g_image_id);
+            txtbuf = get_objectScan_buf(len, g_image_id);
+            get_data_from_buf (txtbuf);
+            free(txtbuf);
+            data = g_file_buf; 
             break;
 #endif
     }
 
-    return len;
+    return data;
 }
 
 void set_image_source(ImageDataType data_type, int image_id)
@@ -164,13 +242,13 @@ void init_data_header()
 #ifndef NIOS
 int get_random (int base, int var)
 {
-    return base + var*1.0*rand()/(RAND_MAX+1);
+    return base + var*1.0*rand()/(RAND_MAX);
 }
 
 void init_real_buf (void)
 {
     int i;
-    srand(NULL);
+    srandom(time(NULL));
     for (i=0; i < PIXEL_NUM; i++)
     {
         int base = 900;
@@ -178,7 +256,6 @@ void init_real_buf (void)
         unsigned int data = get_random(base, var);
         g_real_buf[i*2] = (data & 0xFF);
         g_real_buf[i*2+1] = (data & 0xFF00) >> 8;
-
     }
 
 }
@@ -195,7 +272,6 @@ void init_pattern_buf (void)
     }
 }
 
-struct timeval t_last_time;
 
 double time_diff(struct timeval x , struct timeval y)
 {
@@ -213,15 +289,10 @@ int process_img_data(int sd)
 {
     //puts("process img data");
     unsigned char* buf= NULL;
-    struct timeval t_current;
-    gettimeofday (&t_current, NULL);
-    double diff = time_diff(t_last_time, t_current);
-
-    if (diff  < g_integration_time)
-        return 0;
 
     if (g_frame_enabled)
     {
+        /*
         if (g_data_pattern_enabled)
         {
             buf = g_data_pattern_buf;
@@ -229,10 +300,15 @@ int process_img_data(int sd)
         else {
             buf = g_data_pattern_buf;
         }
+        */
         //char* address;
         //int len = get_data_buf(&address);
         //if (len == 0)
         //    return 0;
+        long len;
+        buf = get_image_data (&len);
+        if (buf == NULL)
+            return 0; 
         if (send(sd , g_data_header, 6, 0) < 0) 
         {
             printf("Send header error\n");
@@ -247,7 +323,6 @@ int process_img_data(int sd)
         };
         set_packet_count();
     }
-    t_last_time = t_current;
     return 0;
 }
 
@@ -482,13 +557,13 @@ void stop_frame ()
 void enable_data_pattern ()
 {
     //g_data_pattern_enabled = TRUE;
-    set_image_source (Pattern);
+    set_image_source (Pattern, 0);
 }
 
 void disable_data_pattern ()
 {
    //g_data_pattern_enabled = FALSE;
-    set_image_source (Real);
+    set_image_source (Real, 0);
 }
 
 void set_sensitivity_level (int level)
@@ -608,13 +683,16 @@ void cmd_handler(char* cmd, char* cmd_response)
         case cmd_XO:
             image_id = get_param_1 (cmd);
             set_image_source(AirScan, image_id);
+            response_ok(cmd_response);
             break;
-        case cmd_XO:
+        case cmd_XF:
             set_image_source(Offset, 0);
+            response_ok(cmd_response);
             break;
         case cmd_OS:
             image_id = get_param_1 (cmd);
             set_image_source(ObjectScan, image_id);
+            response_ok(cmd_response);
             break;
 #endif
     }
