@@ -31,7 +31,8 @@
 #define ETX ']'
 
 #define ERR_FORMAT -1
-#define PIXEL_NUM 1536
+//#define PIXEL_NUM 1536
+#define PIXEL_NUM 1024
 #define PIXEL_BUF_SIZE  (2*PIXEL_NUM)
 #define PATTERN_BASE  1500
 #define PATTERN_STEP  10
@@ -74,10 +75,10 @@ char* get_file_line (char* fileName, long* len, int* lineId)
     char path[256] = {0};
     strcat(path, PATH);
     strcat(path, fileName);
-    printf("path is %s \n", path);
     FILE* file = fopen(path, "r");
     if (file == NULL) {
         printf("cannot open file");
+        perror(path);
         return NULL;
     }
 
@@ -85,24 +86,25 @@ char* get_file_line (char* fileName, long* len, int* lineId)
     char* line = NULL;
     int curLine = 0;
 read:
-    while(( read == getline(&line, len, file)) != -1) {
+    rewind(file);
+    curLine = 0;
+    while(( read = getline(&line, len, file)) != -1) {
         if(*lineId ==  curLine) {
-            *lineId++;
-            printf("%s", line);
+            (*lineId)++;
+            fclose(file);
             return line;
-            break;
         }
         curLine++;
     }
     //get eof, the file have curLine lines
-    *lineId -= curLine++;
+    *lineId -= curLine;
     goto read;
 }
 
 char*  get_offset_buf (long* len)
 {
     static line = 0;
-    char* fileName = "offset.txt";
+    char* fileName = "Offset.txt";
     return get_file_line(fileName, len, &line);
 }
 
@@ -117,6 +119,10 @@ char* get_airScan_buf (long* len, int image_id)
                     "110kV.txt",
                     "120kV.txt",
                     "140kV.txt"};
+    if(image_id > 7)
+        image_id = 7;
+    if (image_id < 0)
+        image_id = 0;
 
     return get_file_line(file[image_id], len, &line[image_id]);
 }
@@ -125,7 +131,11 @@ char* get_objectScan_buf (long* len, int image_id)
 {
     static line[2];
     char* file[] = {"Image0_140kV.txt", 
-                    "Image0_140kV.txt"};
+                    "Image1_140kV.txt"};
+    if(image_id > 1)
+        image_id = 1;
+    if (image_id < 0)
+        image_id = 0;
     return get_file_line(file[image_id], len, &line[image_id]);
 
 }
@@ -137,6 +147,7 @@ void get_data_from_buf (char* input)
     int k = 0;
     char number[6];
 
+    //printf("input is %s\n", input);
     while(input[i] != '\0') {
         if((input[i] != '\t') && (j < 6)) {
             number[j] = input[i];
@@ -151,6 +162,7 @@ void get_data_from_buf (char* input)
             } else {
                 return;
             }
+            j = 0;
         }
         i++;
     }
@@ -195,20 +207,28 @@ unsigned char* get_image_data (long* len)
 #ifndef NIOS
         case Offset:
             txtbuf = get_offset_buf(len);
-            get_data_from_buf (txtbuf);
-            free(txtbuf);
+            if (txtbuf) {
+                get_data_from_buf (txtbuf);
+                free(txtbuf);
+            } else {
+                printf("text vuf is NULL\n");
+            }
             data = g_file_buf; 
             break;
         case AirScan:
             txtbuf = get_airScan_buf(len, g_image_id);
-            get_data_from_buf (txtbuf);
-            free(txtbuf);
+            if (txtbuf) {
+                get_data_from_buf (txtbuf);
+                free(txtbuf);
+            }
             data = g_file_buf; 
             break;
         case ObjectScan:
             txtbuf = get_objectScan_buf(len, g_image_id);
-            get_data_from_buf (txtbuf);
-            free(txtbuf);
+            if (txtbuf) {
+                get_data_from_buf (txtbuf);
+                free(txtbuf);
+            }
             data = g_file_buf; 
             break;
 #endif
@@ -368,9 +388,9 @@ int process_cmd_data(int sd)
        */
     /*
        For testing purpose
-       XO, image_id  x-ray on image_id
-       XF, x-ray off load offset image
-       OS, image_id  Object Scan with x-ray
+       XO,W,image_id  x-ray on image_id
+       XF  x-ray off load offset image
+       OS,W,image_id  Object Scan with x-ray
 
        */
 enum Command {
@@ -384,8 +404,8 @@ enum Command {
     cmd_TP
 #ifndef NIOS
     , 
-    cmd_XO,
-    cmd_XF,
+    cmd_X_ON,
+    cmd_X_OFF,
     cmd_OS
 #endif
 };
@@ -474,9 +494,9 @@ enum Command get_cmd_id (char* cmd)
         return cmd_ST;
 #ifndef NIOS
     if ((cmd[1] == 'X')&&(cmd[2] == 'O'))
-        return cmd_XO;
+        return cmd_X_ON;
     if ((cmd[1] == 'X')&&(cmd[2] == 'F'))
-        return cmd_XF;
+        return cmd_X_OFF;
     if ((cmd[1] == 'O')&&(cmd[2] == 'S'))
         return cmd_OS;
 #endif
@@ -680,12 +700,13 @@ void cmd_handler(char* cmd, char* cmd_response)
         case cmd_TP:
             break;
 #ifndef NIOS
-        case cmd_XO:
+        case cmd_X_ON:
             image_id = get_param_1 (cmd);
+            printf("image_id is %d\n", image_id);
             set_image_source(AirScan, image_id);
             response_ok(cmd_response);
             break;
-        case cmd_XF:
+        case cmd_X_OFF:
             set_image_source(Offset, 0);
             response_ok(cmd_response);
             break;
