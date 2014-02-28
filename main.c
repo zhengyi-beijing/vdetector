@@ -191,7 +191,6 @@ unsigned char* get_image_data (unsigned long* len)
         case Real:
 #ifdef NIOS
             data = (char*)get_data_buff (len, 1);
-                printf("len is %x\n", *len);
             if(*len ==0){
                 data = NULL;
             } else if (*len == 0xffffffff) {
@@ -200,8 +199,6 @@ unsigned char* get_image_data (unsigned long* len)
                 if(*len == 0)
                     data = NULL;
             }
-            else
-                printf("len is %x\n", *len);
 #else
             data = g_real_buf;
             *len = PIXEL_BUF_SIZE;
@@ -325,7 +322,6 @@ int process_img_data(int sd)
         buf = get_image_data (&len);
         if (buf == NULL)
             return 0; 
-        printf ("len is %d\n", len);
 #ifdef NIOS
         if (g_image_data_type == Real) {
             //send 2 lines without test data
