@@ -32,7 +32,11 @@
 
 #define ERR_FORMAT -1
 //#define PIXEL_NUM 1536
-#define PIXEL_NUM 1024
+#ifdef NIOS
+    #define PIXEL_NUM 64 
+#else
+    #define PIXEL_NUM 1024
+#endif
 #define PIXEL_BUF_SIZE  (2*PIXEL_NUM)
 #define PATTERN_BASE  1500
 #define PATTERN_STEP  10
@@ -41,7 +45,6 @@ int g_integration_time = 5000;
 int g_data_pattern_enabled = FALSE;
 int g_sensitivity_level = 6;
 int g_frame_enabled = FALSE;
-
 
 unsigned char g_cmd_buf[CMD_BUF_SIZE-1];  //data buffer of 1K
 unsigned char g_cmd_response[CMD_BUF_SIZE-1];
@@ -64,9 +67,10 @@ typedef enum { Real, Pattern} ImageDataType  ;
 #endif
 ImageDataType g_image_data_type = Real; 
 
-struct timeval t_last_time;
-#ifndef NIOS
 int g_image_id = 0;
+struct timeval t_last_time;
+
+#ifndef NIOS
 char* PATH = "./data/";
 
 char* get_file_line (char* fileName, long* len, int* lineId)
@@ -168,7 +172,7 @@ void get_data_from_buf (char* input)
     }
 }
 #endif
-unsigned char* get_image_data (long* len)
+unsigned char* get_image_data (unsigned long* len)
 {
     char* txtbuf = NULL;
     char* data = NULL;
@@ -186,15 +190,18 @@ unsigned char* get_image_data (long* len)
     {
         case Real:
 #ifdef NIOS
-            data = get_data_buf (len, 1);
+            data = (char*)get_data_buff (len, 1);
+                printf("len is %x\n", *len);
             if(*len ==0){
-                buf = NULL;
-            } else if (*len = 0xffffffff) {
-                reset_data_buf();
-                buf = get_data_buf (len,0);
+                data = NULL;
+            } else if (*len == 0xffffffff) {
+                reset_data_buff();
+                data = get_data_buff (len,0);
                 if(*len == 0)
-                    buf = NULL;
+                    data = NULL;
             }
+            else
+                printf("len is %x\n", *len);
 #else
             data = g_real_buf;
             *len = PIXEL_BUF_SIZE;
@@ -211,7 +218,7 @@ unsigned char* get_image_data (long* len)
                 get_data_from_buf (txtbuf);
                 free(txtbuf);
             } else {
-                printf("text vuf is NULL\n");
+                printf("text buf is NULL\n");
             }
             data = g_file_buf; 
             break;
@@ -240,8 +247,10 @@ unsigned char* get_image_data (long* len)
 void set_image_source(ImageDataType data_type, int image_id)
 {
     g_image_data_type = data_type;
+    printf("data_type is %d\n", g_image_data_type);
     g_image_id = image_id;
 }
+
 void set_packet_count()
 {
     packet_count++;
@@ -312,23 +321,58 @@ int process_img_data(int sd)
 
     if (g_frame_enabled)
     {
-        /*
-        if (g_data_pattern_enabled)
-        {
-            buf = g_data_pattern_buf;
-        }
-        else {
-            buf = g_data_pattern_buf;
-        }
-        */
-        //char* address;
-        //int len = get_data_buf(&address);
-        //if (len == 0)
-        //    return 0;
-        long len;
+        unsigned long len;
         buf = get_image_data (&len);
         if (buf == NULL)
             return 0; 
+        printf ("len is %d\n", len);
+#ifdef NIOS
+        if (g_image_data_type == Real) {
+            //send 2 lines without test data
+            if (send(sd , g_data_header, 6, 0) < 0) 
+            {
+                printf("Send header error\n");
+                close(sd);
+                return -1;
+            };
+            //First 10 bytes is test data
+            if (send(sd , buf+10, PIXEL_NUM*2, 0) < 0) 
+            {
+                printf("Send data error\n");
+                close(sd);
+                return -1;
+            };
+            //First line
+            if (send(sd , g_data_header, 6, 0) < 0) 
+            {
+                printf("Send header error\n");
+                close(sd);
+                return -1;
+            };
+            // second line
+            if (send(sd , buf+10+PIXEL_NUM*2, PIXEL_NUM*2, 0) < 0) 
+            {
+                printf("Send data error\n");
+                close(sd);
+                return -1;
+            };
+
+        } else {
+            if (send(sd , g_data_header, 6, 0) < 0) 
+            {
+                printf("Send header error\n");
+                close(sd);
+                return -1;
+            };
+            if (send(sd , buf, PIXEL_NUM*2, 0) < 0) 
+            {
+                printf("Send data error\n");
+                close(sd);
+                return -1;
+            };
+
+        }
+#else
         if (send(sd , g_data_header, 6, 0) < 0) 
         {
             printf("Send header error\n");
@@ -341,6 +385,7 @@ int process_img_data(int sd)
             close(sd);
             return -1;
         };
+#endif
         set_packet_count();
     }
     return 0;
@@ -562,7 +607,7 @@ void start_frame ()
     gettimeofday (&t_last_time, NULL);
     printf("last time is %f s    %f us", (double)t_last_time.tv_sec, (double)t_last_time.tv_usec);
 #ifdef NIOS
-    reset_data_buf();
+    reset_data_buff();
 #endif
 }
 
@@ -576,13 +621,11 @@ void stop_frame ()
 
 void enable_data_pattern ()
 {
-    //g_data_pattern_enabled = TRUE;
     set_image_source (Pattern, 0);
 }
 
 void disable_data_pattern ()
 {
-   //g_data_pattern_enabled = FALSE;
     set_image_source (Real, 0);
 }
 
@@ -597,10 +640,13 @@ void set_sensitivity_level (int level)
 
 void set_integration_time (int time_in_us)
 {
-    if(time_in_us < 2000){
+    if((time_in_us < 4000) || (time_in_us > 16000)){
         printf("integration time is %d us, too short", time_in_us);
         return;
     }
+#ifdef NIOS
+    set_conv(time_in_us/2.5);
+#endif
     g_integration_time = time_in_us;
 
 }
@@ -829,7 +875,9 @@ INIT:
     init_real_buf();
 #endif
     //a message
+    set_image_source(Real, 0);
  
+    set_integration_time (4000);
     //initialise all client_socket[] to 0 so not checked
     for (i = 0; i < max_clients; i++) {
         cmd_client_socket[i] = 0;
