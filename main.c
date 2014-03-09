@@ -58,7 +58,7 @@ void cmd_handler(char* cmd, char* cmd_response);
 
 double time_diff(struct timeval x , struct timeval y);
 #ifndef NIOS
-typedef enum { Real, Pattern, AirScan, Offset, ObjectScan} ImageDataType  ;
+typedef enum { Real, Pattern, AirScan, ObjectScan} ImageDataType  ;
 #else
 typedef enum { Real, Pattern} ImageDataType  ;
 #endif
@@ -111,7 +111,8 @@ char*  get_offset_buf (long* len)
 char* get_airScan_buf (long* len, int image_id)
 {
     static line[8];
-    char* file[] = {"50kV.txt", 
+    char* file[] = {"Offset.txt",
+                    "50kV.txt", 
                     "60kV.txt",
                     "80kV.txt",
                     "90kV.txt",
@@ -119,7 +120,7 @@ char* get_airScan_buf (long* len, int image_id)
                     "110kV.txt",
                     "120kV.txt",
                     "140kV.txt"};
-    if(image_id > 7)
+    if(image_id > 8)
         image_id = 7;
     if (image_id < 0)
         image_id = 0;
@@ -205,16 +206,6 @@ unsigned char* get_image_data (long* len)
             *len = PIXEL_BUF_SIZE;
             break;
 #ifndef NIOS
-        case Offset:
-            txtbuf = get_offset_buf(len);
-            if (txtbuf) {
-                get_data_from_buf (txtbuf);
-                free(txtbuf);
-            } else {
-                printf("text vuf is NULL\n");
-            }
-            data = g_file_buf; 
-            break;
         case AirScan:
             txtbuf = get_airScan_buf(len, g_image_id);
             if (txtbuf) {
@@ -495,8 +486,6 @@ enum Command get_cmd_id (char* cmd)
 #ifndef NIOS
     if ((cmd[1] == 'X')&&(cmd[2] == 'O'))
         return cmd_X_ON;
-    if ((cmd[1] == 'X')&&(cmd[2] == 'F'))
-        return cmd_X_OFF;
     if ((cmd[1] == 'O')&&(cmd[2] == 'S'))
         return cmd_OS;
 #endif
@@ -704,10 +693,6 @@ void cmd_handler(char* cmd, char* cmd_response)
             image_id = get_param_1 (cmd);
             printf("image_id is %d\n", image_id);
             set_image_source(AirScan, image_id);
-            response_ok(cmd_response);
-            break;
-        case cmd_X_OFF:
-            set_image_source(Offset, 0);
             response_ok(cmd_response);
             break;
         case cmd_OS:
