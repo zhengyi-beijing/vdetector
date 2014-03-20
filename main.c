@@ -604,13 +604,27 @@ void stop_frame ()
 #endif
 }
 
-void enable_data_pattern ()
+void enable_data_pattern (int mode)
 {
-    set_image_source (Pattern, 0);
+    if(mode == 1) {
+        //hardware pattern
+#ifdef NIOS
+        set_pattern_data(1);
+        set_image_source (Real, 0);
+#else
+        set_image_source (Pattern, 0);
+#endif
+    } else {
+        //software pattern
+        set_image_source (Pattern, 0);
+    }
 }
 
 void disable_data_pattern ()
 {
+#ifdef NIOS
+    set_pattern_data(0);
+#endif
     set_image_source (Real, 0);
 }
 
@@ -667,7 +681,7 @@ void cmd_handler(char* cmd, char* cmd_response)
             {
                 int param1 = get_param_1 (cmd);
                 if (param1 > 0)
-                    enable_data_pattern ();
+                    enable_data_pattern (param1);
                 else
                     disable_data_pattern ();
                 response_ok(cmd_response);
