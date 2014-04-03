@@ -32,15 +32,17 @@
 
 #define ERR_FORMAT -1
 //#define PIXEL_NUM 1536
-#ifdef NIOS
-    #define PIXEL_NUM 64 
-#else
-    #define PIXEL_NUM 1024
-#endif
-#define PIXEL_BUF_SIZE  (2*PIXEL_NUM)
 #define PATTERN_BASE  1500
 #define PATTERN_STEP  10
 
+#ifdef NIOS
+    int EMT_NUMBER = 20;
+    int EMT_MODE = 0;//0 EMT_Mode, 1 s8866 Mode
+#endif
+#define MAX_PIXEL_NUM 8192
+#define MIN_PIXEL_NUM 64
+int PIXEL_NUM = 1280;
+#define PIXEL_BUF_SIZE  (2*PIXEL_NUM)
 int g_integration_time = 5000;
 int g_data_pattern_enabled = FALSE;
 int g_sensitivity_level = 6;
@@ -49,13 +51,16 @@ int g_frame_enabled = FALSE;
 unsigned char g_cmd_buf[CMD_BUF_SIZE-1];  //data buffer of 1K
 unsigned char g_cmd_response[CMD_BUF_SIZE-1];
 unsigned char g_param_1 [PARA_BUF_SIZE-1];
-unsigned char g_data_pattern_buf [PIXEL_BUF_SIZE-1];
+//unsigned char g_data_pattern_buf [PIXEL_BUF_SIZE];
+unsigned char* g_data_pattern_buf = NULL;
 unsigned char g_data_header[6];
 #ifndef NIOS
-unsigned char g_real_buf[PIXEL_BUF_SIZE];
-unsigned char g_file_buf[PIXEL_BUF_SIZE];
+//unsigned char g_real_buf[PIXEL_BUF_SIZE];
+unsigned char* g_real_buf = NULL; 
+//unsigned char* g_file_buf[PIXEL_BUF_SIZE];
+unsigned char* g_file_buf = NULL;
 #endif
-unsigned char packet_count = 0;
+unsigned char g_packet_count = 0;
 
 void cmd_handler(char* cmd, char* cmd_response);
 
@@ -70,6 +75,7 @@ ImageDataType g_image_data_type = Real;
 int g_image_id = 0;
 struct timeval t_last_time;
 
+void init_sys_var();
 #ifndef NIOS
 char* PATH = "./data/";
 
@@ -241,8 +247,8 @@ void set_image_source(ImageDataType data_type, int image_id)
 
 void set_packet_count()
 {
-    packet_count++;
-    g_data_header[3] = packet_count;
+    g_packet_count++;
+    g_data_header[3] = g_packet_count;
 }
 
 void init_data_header()
@@ -251,7 +257,7 @@ void init_data_header()
     unsigned int len = PIXEL_NUM*2+6;
     g_data_header[1] = (len & 0xFF00)>>8;
     g_data_header[2] = (len & 0xFF);
-    g_data_header[3] = packet_count;
+    g_data_header[3] = g_packet_count;
     g_data_header[4] = 0;
     g_data_header[5] = 0;
 }
@@ -416,7 +422,9 @@ int process_cmd_data(int sd)
        ED, W/R, 0/1
        SS, W/R, 1-7
        TP, W/R, time ms
-
+       EN, W/R, emt_number
+       EM, W/R, emt mode
+       PN, W/R  pixel number
        */
     /*
        For testing purpose
@@ -433,9 +441,11 @@ enum Command {
     cmd_SF,
     cmd_SS,
     cmd_ST,
-    cmd_TP
+    cmd_TP,
+    cmd_EN,
+    cmd_EM,
+    cmd_PN,
 #ifndef NIOS
-    , 
     cmd_X_ON,
     cmd_X_OFF,
     cmd_OS
@@ -524,6 +534,13 @@ enum Command get_cmd_id (char* cmd)
 
     if ((cmd[1] == 'T')&&(cmd[2] == 'P'))
         return cmd_ST;
+
+    if ((cmd[1] == 'E')&&(cmd[2] == 'M'))
+        return cmd_EM;
+    if ((cmd[1] == 'E')&&(cmd[2] == 'N'))
+        return cmd_EN;
+    if ((cmd[1] == 'P')&&(cmd[2] == 'N'))
+        return cmd_PN;
 #ifndef NIOS
     if ((cmd[1] == 'X')&&(cmd[2] == 'O'))
         return cmd_X_ON;
@@ -587,7 +604,7 @@ int get_param_1 (char* cmd)
 
 void start_frame ()
 {
-    packet_count = 0;
+    g_packet_count = 0;
     g_frame_enabled = TRUE;
     gettimeofday (&t_last_time, NULL);
     printf("last time is %f s    %f us", (double)t_last_time.tv_sec, (double)t_last_time.tv_usec);
@@ -632,19 +649,32 @@ void set_sensitivity_level (int level)
 {
     if (level < 0)
         level = 0;
-    if (level > 6)
-        level = 6;
+    if (level > 15)
+        level = 15;
+#ifdef NIOS
+    if(EMT_MODE)
+        level = (level > 0)?1:0; 
+    set_gain(level);
+#endif
     g_sensitivity_level = level;
 }
 
 void set_integration_time (int time_in_us)
 {
-    if((time_in_us < 4000) || (time_in_us > 16000)){
-        printf("integration time is %d us, too short", time_in_us);
-        return;
-    }
 #ifdef NIOS
-    set_conv(time_in_us/2.5);
+    if(EMT_MODE > 0) {
+        if((time_in_us < 4000) || (time_in_us > 8000)){
+            printf("integration time is %d us, out of range", time_in_us);
+            return;
+        }
+        set_conv(time_in_us*2);
+    } else {
+        if((time_in_us < 4000) || (time_in_us > 40000)){
+            printf("integration time is %d us, out of range", time_in_us);
+            return;
+        }
+        set_conv(time_in_us/2.5);
+    }
 #endif
     g_integration_time = time_in_us;
 
@@ -743,6 +773,35 @@ void cmd_handler(char* cmd, char* cmd_response)
             }
             break;
         case cmd_TP:
+            break;
+        case cmd_EN:
+            if(op_id == op_W) {
+#ifdef NIOS
+                int emt = get_param_1(cmd);
+                set_s8866_emt_numbers(emt);
+#endif
+            }
+            break;
+        case cmd_EM:
+            if(op_id == op_W) {
+#ifdef NIOS
+               int mode = get_param_1(cmd);
+               if( mode > 0)
+                   EMT_MODE = 1;
+               else
+                   EMT_MODE = 0;
+               init_sys(EMT_MODE);
+#endif
+            }
+            break;
+        case cmd_PN:
+            if(op_id == op_W) {
+               int pixels = get_param_1(cmd);
+               if ((pixels < MAX_PIXEL_NUM) && (pixels > MIN_PIXEL_NUM)){
+                   PIXEL_NUM = pixels;
+               }
+            }
+            init_sys_var();
             break;
 #ifndef NIOS
         case cmd_X_ON:
@@ -843,6 +902,23 @@ int accept_new_connection(int master_socket, int client_socket[], int max_client
 }
 
 
+
+void init_sys_var()
+{
+ //   g_integration_time = 5000;
+ //   g_data_pattern_enabled = FALSE;
+ //   g_sensitivity_level = 6;
+ //   g_frame_enabled = FALSE;
+    g_data_pattern_buf =  realloc(g_data_pattern_buf, PIXEL_BUF_SIZE);
+#ifndef NIOS
+    g_real_buf = realloc(g_real_buf, PIXEL_BUF_SIZE);
+    g_file_buf = realloc(g_file_buf, PIXEL_BUF_SIZE);
+#endif
+    g_packet_count = 0;
+    init_data_header();
+    init_pattern_buf(); 
+}
+
 int main(int argc , char *argv[])
 {
     int addrlen;
@@ -861,11 +937,10 @@ int main(int argc , char *argv[])
         return -1;
     }
 INIT:    
-    packet_count = 0;
-    init_data_header();
-    init_pattern_buf(); 
+    init_sys_var();
 #ifdef NIOS
-    init_sys(); 
+    init_sys(EMT_MODE); 
+    set_s8866_emt_numbers(EMT_NUMBER);
 #else
     init_real_buf();
 #endif
@@ -955,7 +1030,6 @@ INIT:
             sd = cmd_client_socket[i];
             if (FD_ISSET(sd, &read_fds)){
                 if (process_cmd_data(sd)<0){
-                //   cmd_client_socket[i] = 0;
                     goto CLEAN;
                 }
             }
@@ -963,7 +1037,6 @@ INIT:
             sd = img_client_socket[i];
             if(FD_ISSET(sd, &write_fds)){
                 if (process_img_data(sd)<0){
-                 //   img_client_socket[i] = 0;
                     goto CLEAN;
                 }
             }
