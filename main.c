@@ -41,7 +41,7 @@
 #endif
 #define MAX_PIXEL_NUM 8192
 #define MIN_PIXEL_NUM 64
-int PIXEL_NUM = 1280;
+int PIXEL_NUM = 1024;
 #define PIXEL_BUF_SIZE  (2*PIXEL_NUM)
 int g_integration_time = 5000;
 int g_data_pattern_enabled = FALSE;
